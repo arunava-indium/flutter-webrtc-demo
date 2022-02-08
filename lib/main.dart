@@ -1,249 +1,139 @@
-import 'dart:convert';
-import 'package:sdp_transform/sdp_transform.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'dart:core';
 
-void main() {
-  runApp(const MyApp());
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'src/call_sample/call_sample.dart';
+import 'src/call_sample/data_channel_sample.dart';
+import 'src/route_item.dart';
+
+void main() => runApp(MyApp());
+
+class MyApp extends StatefulWidget {
+  @override
+  _MyAppState createState() => _MyAppState();
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+enum DialogDemoAction {
+  cancel,
+  connect,
+}
 
-  // This widget is the root of your application.
+class _MyAppState extends State<MyApp> {
+  List<RouteItem> items = [];
+  String _server = '';
+  late SharedPreferences _prefs;
+
+  bool _datachannel = false;
+  @override
+  initState() {
+    super.initState();
+    _initData();
+    _initItems();
+  }
+
+  _buildRow(context, item) {
+    return ListBody(children:[
+      ListTile(
+        title: Text(item.title),
+        onTap: () => item.push(context),
+        trailing: Icon(Icons.arrow_right),
+      ),
+      Divider()
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter WebRTC',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: Scaffold(
+          appBar: AppBar(
+            title: Text('Flutter-WebRTC example'),
+          ),
+          body: ListView.builder(
+              shrinkWrap: true,
+              padding: const EdgeInsets.all(0.0),
+              itemCount: items.length,
+              itemBuilder: (context, i) {
+                return _buildRow(context, items[i]);
+              })),
     );
   }
-}
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({Key? key, required this.title}) : super(key: key);
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-
-  final _localRenderer = RTCVideoRenderer();
-  final _remoteRenderer = RTCVideoRenderer();
-  late MediaStream _localStream;
-  final sdpController = TextEditingController();
-  bool _offer = false;
-  late RTCPeerConnection _peerConnection;
-
-  @override
-  void dispose() {
-    _localStream.dispose();
-    _localRenderer.dispose();
-    _remoteRenderer.dispose();
-    sdpController.dispose();
-    super.dispose();
-  }
-
-  @override
-  void initState() {
-    initRenderers();
-    _createPeerConnection().then((pc){
-      _peerConnection = pc;
+  _initData() async {
+    _prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _server = _prefs.getString('server') ?? 'demo.cloudwebrtc.com';
     });
-    super.initState();
   }
 
-  _createPeerConnection() async{
-    Map<String,dynamic> configuration = {
-      "iceServers":[
-        {"url":"stun:stun.l.google.com:19302"}
-      ]
-    };
-
-    final Map<String, dynamic> offerSdpConstraints = {
-      "mandatory":{
-        "offerToReceiveAudio": true,
-        "offerToReceiveVideo": true,
-      },
-      "optional":[]
-    };
-    _localStream = await _getUserMedia();
-    RTCPeerConnection pc = await createPeerConnection(configuration, offerSdpConstraints);
-    pc.addStream(_localStream);
-
-    pc.onIceCandidate = (e){
-      if(e.candidate != null){
-        print(json.encode({
-          'candidate':e.candidate.toString(),
-          'sdpMid': e.sdpMid.toString(),
-          'sdpMlineIndex': e.sdpMlineIndex,
-        }));
+  void showDemoDialog<T>(
+      {required BuildContext context, required Widget child}) {
+    showDialog<T>(
+      context: context,
+      builder: (BuildContext context) => child,
+    ).then<void>((T? value) {
+      // The value passed to Navigator.pop() or null.
+      if (value != null) {
+        if (value == DialogDemoAction.connect) {
+          _prefs.setString('server', _server);
+          Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (BuildContext context) => _datachannel
+                      ? DataChannelSample(host: _server)
+                      : CallSample(host: _server)));
+        }
       }
-    };
-
-    pc.onIceConnectionState = (e){
-      print(e);
-    };
-
-    pc.onAddStream = (stream){
-      print('addStream: ' + stream.id);
-      _remoteRenderer.srcObject = stream;
-    };
-
-    return pc;
+    });
   }
 
-  initRenderers() async{
-    await _localRenderer.initialize();
-    await _remoteRenderer.initialize();
+  _showAddressDialog(context) {
+    showDemoDialog<DialogDemoAction>(
+        context: context,
+        child: AlertDialog(
+            title: const Text('Enter server address:'),
+            content: TextField(
+              onChanged: (String text) {
+                setState(() {
+                  _server = text;
+                });
+              },
+              decoration: InputDecoration(
+                hintText: _server,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            actions: <Widget>[
+              FlatButton(
+                  child: const Text('CANCEL'),
+                  onPressed: () {
+                    Navigator.pop(context, DialogDemoAction.cancel);
+                  }),
+              FlatButton(
+                  child: const Text('CONNECT'),
+                  onPressed: () {
+                    Navigator.pop(context, DialogDemoAction.connect);
+                  })
+            ]));
   }
 
-  _getUserMedia() async {
-    final Map<String, dynamic> mediaConstraints = {
-      'audio': false,
-      'video': {
-        'mandatory': {
-          'minWidth':
-          '1280', // Provide your own width, height and frame rate here
-          'minHeight': '720',
-          'minFrameRate': '30',
-        },
-        'facingMode': 'user',
-        'optional': [],
-      },
-    };
-
-    MediaStream stream = await navigator.getUserMedia(mediaConstraints);
-
-    _localRenderer.srcObject = stream;
-    return stream;
-  }
-
-  void _createOffer() async {
-    RTCSessionDescription description =
-    await _peerConnection.createOffer({'offerToReceiveVideo': 1});
-    var session = parse(description.sdp.toString());
-    print(json.encode(session));
-    _offer = true;
-
-    _peerConnection.setLocalDescription(description);
-  }
-
-  void _setRemoteDescription() async{
-    String jsonString = sdpController.text;
-    dynamic session = await jsonDecode('$jsonString');
-    String sdp = write(session, null);
-    RTCSessionDescription description = RTCSessionDescription(sdp, _offer ? 'answer' : 'offer');
-    print(description.toMap());
-    await _peerConnection.setRemoteDescription(description);
-  }
-
-  void _createAnswer() async {
-    RTCSessionDescription description =
-    await _peerConnection.createAnswer({'offerToReceiveVideo': 1});
-
-    var session = parse(description.sdp.toString());
-    print(json.encode(session));
-    // print(json.encode({
-    //       'sdp': description.sdp.toString(),
-    //       'type': description.type.toString(),
-    //     }));
-
-    _peerConnection.setLocalDescription(description);
-  }
-
-  void _setCandidate() async{
-    String jsonString = sdpController.text;
-    dynamic session = await jsonDecode('$jsonString');
-    print(session['candidate']);
-    dynamic candidate =
-    RTCIceCandidate(session['candidate'], session['sdpMid'], session['sdpMlineIndex']);
-    await _peerConnection.addCandidate(candidate);
-  }
-
-  SizedBox videoRenderers() => SizedBox(
-    height: 210,
-    child: Row(
-      children: [
-        Flexible(
-          child: Container(
-            key: const Key('local'),
-            margin: const EdgeInsets.fromLTRB(5.0, 5.0, 5.0, 5.0),
-            decoration: const BoxDecoration(color: Colors.black),
-            child: RTCVideoView(_localRenderer),
-          ),
-        ),
-        Flexible(
-          child: Container(
-            key: const Key('remote'),
-            margin: const EdgeInsets.fromLTRB(5.0, 5.0, 5.0, 5.0),
-            decoration: const BoxDecoration(color: Colors.black),
-            child: RTCVideoView(_remoteRenderer),
-          ),
-        )
-      ],
-    ),
-  );
-
-  Row offerAnswerButtons() => Row(
-    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-    children:  [
-      ElevatedButton(
-        onPressed: _createOffer,
-        child: const Text('Offer'),
-      ),
-      ElevatedButton(
-        onPressed: _createAnswer,
-        child: Text('Answer'),
-      ),
-    ],
-  );
-
-  Padding sdpCandidateTF() => Padding(
-    padding: const EdgeInsets.all(16.0),
-    child: TextField(
-      controller: sdpController,
-      keyboardType: TextInputType.multiline,
-      maxLines: 4,
-      maxLength: TextField.noMaxLength,
-    ),
-  );
-
-  Row sdpCandidateButtons() => Row(
-    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-    children: [
-      ElevatedButton(
-          onPressed: _setRemoteDescription,
-          child: Text('Set Remote description')
-      ),
-
-      ElevatedButton(
-          onPressed: _setCandidate,
-          child: Text('Set Candidate')
-      )
-    ],
-  );
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-      ),
-      body: Column(
-        children: [
-          videoRenderers(),
-          offerAnswerButtons(),
-          sdpCandidateTF(),
-          sdpCandidateButtons(),
-        ],
-      ),
-    );
+  _initItems() {
+    items = <RouteItem>[
+      RouteItem(
+          title: 'P2P Call Sample',
+          subtitle: 'P2P Call Sample.',
+          push: (BuildContext context) {
+            _datachannel = false;
+            _showAddressDialog(context);
+          }),
+      RouteItem(
+          title: 'Data Channel Sample',
+          subtitle: 'P2P Data Channel.',
+          push: (BuildContext context) {
+            _datachannel = true;
+            _showAddressDialog(context);
+          }),
+    ];
   }
 }
